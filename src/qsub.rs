@@ -59,12 +59,19 @@ impl From<std::io::Error> for QsubError {
 
 /// Submit `bash -c "sleep <delay> && rm -rf -- <path>"` via `qsub` and
 /// return the job address as soon as we see the `[qsub] node …` line on
-/// stderr. The spawned `qsub` is left running detached.
-pub fn submit_delayed_rm(target: &Path, delay: Duration) -> Result<QsubOutcome, QsubError> {
+/// stderr. The spawned `qsub` is left running detached. `workdir` pins
+/// `qsub`'s cwd so the same PWD-local `.tren-<uuid>/` namespace is reused
+/// across daemon restarts.
+pub fn submit_delayed_rm(
+    target: &Path,
+    delay: Duration,
+    workdir: &Path,
+) -> Result<QsubOutcome, QsubError> {
     submit_delayed_rm_with_bin(
         std::env::var("BOMB_TTL_QSUB_BIN").unwrap_or_else(|_| "qsub".into()),
         target,
         delay,
+        workdir,
     )
 }
 
@@ -72,6 +79,7 @@ pub fn submit_delayed_rm_with_bin(
     qsub_bin: String,
     target: &Path,
     delay: Duration,
+    workdir: &Path,
 ) -> Result<QsubOutcome, QsubError> {
     let target_q = shell_single_quote(&target.to_string_lossy());
     let cmd = format!("sleep {} && rm -rf -- {}", delay.as_secs(), target_q,);
@@ -79,6 +87,7 @@ pub fn submit_delayed_rm_with_bin(
         .arg("bash")
         .arg("-c")
         .arg(&cmd)
+        .current_dir(workdir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -135,11 +144,13 @@ pub fn submit_delayed_rm_with_bin(
 
 /// Try to delete a queued job via `qdel <jobid>`. Returns `Ok(true)` if
 /// `qdel` exited 0, `Ok(false)` if non-zero. `qdel` not on `PATH` is
-/// reported as [`QsubError::NotFound`].
-pub fn qdel(jobid: &str) -> Result<bool, QsubError> {
+/// reported as [`QsubError::NotFound`]. `workdir` pins `qdel`'s cwd so it
+/// finds the same PWD-local `.tren-<uuid>/` namespace `qsub` used.
+pub fn qdel(jobid: &str, workdir: &Path) -> Result<bool, QsubError> {
     let bin = std::env::var("BOMB_TTL_QDEL_BIN").unwrap_or_else(|_| "qdel".into());
     let st = match Command::new(&bin)
         .arg(jobid)
+        .current_dir(workdir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -9,7 +9,6 @@ use bomb_ttl::{
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 /// TTL-based sweeper for `Workspace/tmp/`.
@@ -93,13 +92,20 @@ fn run_scan(root: &std::path::Path, ttl: Duration) -> std::process::ExitCode {
     }
 }
 
+/// Daemon stop flag. Written to from the SIGTERM/SIGINT handler — must
+/// be a plain `static AtomicBool` so the handler is async-signal-safe
+/// (atomic stores compile to a single guaranteed-safe instruction).
+static STOP_FLAG: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn handle_term(_: libc::c_int) {
+    // SAFETY: AtomicBool::store with Ordering::SeqCst is async-signal-safe
+    // on every Tier-1 Rust target — it lowers to a single atomic write
+    // with no allocator, mutex, or TLS access.
+    STOP_FLAG.store(true, Ordering::SeqCst);
+}
+
 fn run_daemon(root: &std::path::Path, ttl: Duration, interval: Duration) -> std::process::ExitCode {
-    let stop = Arc::new(AtomicBool::new(false));
-    let s2 = Arc::clone(&stop);
-    if let Err(e) = unsafe {
-        // SAFETY: we install handlers that only set an atomic flag.
-        install_term_handler(move || s2.store(true, Ordering::SeqCst))
-    } {
+    if let Err(e) = unsafe { install_term_handler() } {
         eprintln!("bomb-ttl: warning: install_term_handler: {e}");
     }
     eprintln!(
@@ -108,11 +114,11 @@ fn run_daemon(root: &std::path::Path, ttl: Duration, interval: Duration) -> std:
         ttl.as_secs(),
         interval.as_secs()
     );
-    while !stop.load(Ordering::SeqCst) {
+    while !STOP_FLAG.load(Ordering::SeqCst) {
         let report = scan::scan_root(root, ttl, SystemTime::now());
         print_report(&report);
         for _ in 0..interval.as_secs() {
-            if stop.load(Ordering::SeqCst) {
+            if STOP_FLAG.load(Ordering::SeqCst) {
                 break;
             }
             std::thread::sleep(Duration::from_secs(1));
@@ -173,7 +179,8 @@ fn run_cancel(root: &std::path::Path, target: &std::path::Path) -> std::process:
         return std::process::ExitCode::from(2);
     };
     let entry = s.entries.remove(&key).unwrap();
-    match qsub::qdel(&entry.jobid) {
+    let workdir = root.parent().unwrap_or(root);
+    match qsub::qdel(&entry.jobid, workdir) {
         Ok(true) => println!("cancelled jobid={} path={}", entry.jobid, entry.path),
         Ok(false) => println!(
             "qdel {} returned non-zero (entry dropped from state anyway)",
@@ -240,25 +247,9 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
     (y as i32, m, d)
 }
 
-unsafe fn install_term_handler<F>(f: F) -> std::io::Result<()>
-where
-    F: Fn() + Send + Sync + 'static,
-{
-    use std::sync::OnceLock;
-    static HANDLER: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
-    HANDLER.set(Box::new(f)).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "handler already installed",
-        )
-    })?;
-    extern "C" fn raw(_: libc::c_int) {
-        if let Some(f) = HANDLER.get() {
-            f();
-        }
-    }
+unsafe fn install_term_handler() -> std::io::Result<()> {
     let mut act: libc::sigaction = std::mem::zeroed();
-    act.sa_sigaction = raw as *const () as usize;
+    act.sa_sigaction = handle_term as *const () as usize;
     libc::sigemptyset(&mut act.sa_mask);
     let term = libc::sigaction(libc::SIGTERM, &act, std::ptr::null_mut());
     let intr = libc::sigaction(libc::SIGINT, &act, std::ptr::null_mut());

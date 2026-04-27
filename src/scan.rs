@@ -157,7 +157,10 @@ pub fn scan_root(root: &Path, ttl: Duration, now: SystemTime) -> ScanReport {
         }
 
         let delay = ttl - age;
-        match submit_delayed_rm(&path, delay) {
+        // qsub is PWD-local: keep it next to the swept root so successive
+        // daemon runs and `bomb-ttl cancel` reuse the same `.tren-<uuid>/`.
+        let workdir = root.parent().unwrap_or(root);
+        match submit_delayed_rm(&path, delay, workdir) {
             Ok(out) => {
                 let delete_at_secs = created_secs.saturating_add(ttl.as_secs());
                 state.entries.insert(
