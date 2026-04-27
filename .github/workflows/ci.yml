@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, experiment]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    name: cargo test (stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+          rustup default stable
+      - name: cargo fmt --check
+        run: cargo fmt --check
+        continue-on-error: true
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+        continue-on-error: true
+      - name: cargo build
+        run: cargo build --all-targets
+      - name: cargo test
+        run: cargo test --all -- --nocapture

@@ -1,0 +1,27 @@
+[package]
+name        = "bomb-ttl"
+version     = "0.1.0"
+edition     = "2021"
+license     = "Apache-2.0"
+description = "TTL-based sweeper for Workspace/tmp/, scheduled via tren-crc."
+repository  = "https://github.com/chikaharu/bomb-ttl"
+readme      = "README.md"
+keywords    = ["ttl", "sweeper", "tren", "tmp", "qsub"]
+categories  = ["command-line-utilities", "filesystem"]
+
+[lib]
+name = "bomb_ttl"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bomb-ttl"
+path = "src/main.rs"
+
+[dependencies]
+clap        = { version = "4", features = ["derive"] }
+libc        = "0.2"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+
+[dev-dependencies]
+tempfile = "3"
