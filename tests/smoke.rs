@@ -9,19 +9,29 @@
 use bomb_ttl::scan::{scan_root, ScanEvent};
 use bomb_ttl::state::State;
 use bomb_ttl::{ensure_root, STATE_DIR_NAME, STATE_FILE_NAME};
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
-fn fixture_qsub() -> String {
-    let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("tests");
-    p.push("fixtures");
-    p.push("qsub_fake.sh");
-    let mode = std::fs::metadata(&p).unwrap().permissions();
-    use std::os::unix::fs::PermissionsExt;
-    let mut new_mode = mode.clone();
-    new_mode.set_mode(0o755);
-    let _ = std::fs::set_permissions(&p, new_mode);
-    p.to_string_lossy().into_owned()
+/// Install the fake `qsub` exactly once for the whole test binary, then
+/// leave `BOMB_TTL_QSUB_BIN` set for the rest of the process. The fake
+/// is read-only safe (it only echoes a job-address line), so leaving it
+/// set across parallel tests removes the env-var race.
+fn ensure_fixture_qsub() -> &'static str {
+    static FIXTURE: OnceLock<String> = OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        use std::os::unix::fs::PermissionsExt;
+        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.push("tests");
+        p.push("fixtures");
+        p.push("qsub_fake.sh");
+        if let Ok(mut perm) = std::fs::metadata(&p).map(|m| m.permissions()) {
+            perm.set_mode(0o755);
+            let _ = std::fs::set_permissions(&p, perm);
+        }
+        let s = p.to_string_lossy().into_owned();
+        std::env::set_var("BOMB_TTL_QSUB_BIN", &s);
+        s
+    })
 }
 
 #[test]
@@ -42,8 +52,7 @@ fn deletes_past_ttl_immediately_no_qsub_needed() {
 
 #[test]
 fn schedules_future_entry_via_qsub_once_idempotent() {
-    let qsub = fixture_qsub();
-    std::env::set_var("BOMB_TTL_QSUB_BIN", &qsub);
+    ensure_fixture_qsub();
 
     let root = tempfile::tempdir().unwrap();
     ensure_root(root.path()).unwrap();
@@ -74,14 +83,11 @@ fn schedules_future_entry_via_qsub_once_idempotent() {
         r2.events
     );
     assert_eq!(r2.stats.already_scheduled, 1);
-
-    std::env::remove_var("BOMB_TTL_QSUB_BIN");
 }
 
 #[test]
 fn skips_state_dir_and_meta_files() {
-    let qsub = fixture_qsub();
-    std::env::set_var("BOMB_TTL_QSUB_BIN", &qsub);
+    ensure_fixture_qsub();
 
     let root = tempfile::tempdir().unwrap();
     ensure_root(root.path()).unwrap();
@@ -93,8 +99,6 @@ fn skips_state_dir_and_meta_files() {
         r.events
     );
     assert_eq!(r.stats.newly_scheduled, 0);
-
-    std::env::remove_var("BOMB_TTL_QSUB_BIN");
 }
 
 #[test]

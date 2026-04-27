@@ -258,7 +258,7 @@ where
         }
     }
     let mut act: libc::sigaction = std::mem::zeroed();
-    act.sa_sigaction = raw as usize;
+    act.sa_sigaction = raw as *const () as usize;
     libc::sigemptyset(&mut act.sa_mask);
     let term = libc::sigaction(libc::SIGTERM, &act, std::ptr::null_mut());
     let intr = libc::sigaction(libc::SIGINT, &act, std::ptr::null_mut());
